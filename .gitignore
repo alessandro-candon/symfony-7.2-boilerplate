@@ -36,3 +36,5 @@ node_modules
 .phpunit.result.cache
 ###< phpunit/phpunit ###
 .DS_Store
+.phpcs-cache
+phpcs.xml
