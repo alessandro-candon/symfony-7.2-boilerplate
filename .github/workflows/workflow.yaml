@@ -1,0 +1,250 @@
+on:
+  push:
+    branches:
+      - 'main'
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - edited
+      - synchronize
+
+name: Workflow
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    timeout-minutes: 40
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    if: ${{  github.ref_type != 'tag' }}
+    services:
+      postgres:
+        image: postgres:12
+        ports:
+          - 5432:5432
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+      redis:
+        image: redis:alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mailer:
+        image: axllent/mailpit
+        ports:
+          - 8025:8025
+          - 1025:1025
+        env:
+          MP_MAX_MESSAGES: 5000
+          MP_SMTP_AUTH_ACCEPT_ANY: 1
+          MP_SMTP_AUTH_ALLOW_INSECURE: 1
+    steps:
+      - name: 'Cleanup build folder'
+        run: |
+          ls -la ./
+          rm -rf ./* || true
+          rm -rf ./.??* || true
+          ls -la ./
+          
+      - uses: fsouza/fake-gcs-action@v0.4.1
+        with:
+          version: "1.37.2"
+          backend: memory
+          scheme: http
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - run: |
+          ls -la
+          cd migrations
+          ls -la
+#      todo : uncomment when is necessary to deploy
+#      - name: Conftest
+#        uses: docker://openpolicyagent/conftest
+#        with:
+#          args: "test .env.staging .env.prod --combine -p .policy"
+
+      - name: Naming Convention branch-name
+        id: naming_convention_branch_name
+        shell: bash
+        run: |
+          BRANCH_REGEX="^refs\/heads\/(feature|hotfix)\/\(MEMS-[0-9]+\).+$|refs\/heads\/core\/update|refs\/heads\/core-update|refs\/heads\/develop|refs\/heads\/main|refs\/heads\/dependabot.+"
+          if [[ "${{ github.ref }}" =~ $BRANCH_REGEX ]] ; then
+             echo "ok"
+          elif [ "${{ github.event_name }}" != "push" ] ; then
+             echo "It is not a push, skip!"
+          else
+           echo "You must respect branch naming convention rules for ${{ github.ref }}"
+           exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: image
+          target: php_dev
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check Migration
+        id: check_migration
+        shell: bash
+        run: |
+          docker run --network=host -v ${GITHUB_WORKSPACE}:/app -e APP_ENV=test -e APP_DEBUG=1 image /bin/bash -c "composer config --global; \
+          composer install -n --prefer-dist; \
+          php bin/console cache:pool:clear cache.global_clearer; \
+          php bin/console cache:clear --no-warmup; \
+          php bin/console cache:warmup; \
+          php bin/console doctrine:database:drop --force --if-exists ; \
+          php bin/console doctrine:database:create ; \
+          php bin/console doctrine:migrations:migrate --no-interaction --all-or-nothing ; \
+          bin/console doctrine:schema:validate --skip-sync && bin/console doctrine:migrations:up-to-date && ! bin/console doctrine:migrations:diff;"
+
+
+      - name: Linting
+        id: linting
+        shell: bash
+        run: |
+          docker run --network=host -v ${GITHUB_WORKSPACE}:/app image /bin/bash -c "composer config --global; \
+          composer install -n --prefer-dist; \
+          php bin/console cache:pool:clear cache.global_clearer; \
+          php bin/console cache:clear --no-warmup; \
+          php bin/console cache:warmup; \
+          composer run lint"
+
+      - name: PhpStan
+        id: phpstan
+        shell: bash
+        run: |
+          docker run --network=host -v ${GITHUB_WORKSPACE}:/app image /bin/bash  -c "composer config --global; \
+          composer install -n --prefer-dist; \
+          php bin/console cache:pool:clear cache.global_clearer; \
+          php bin/console cache:warmup; \
+          php bin/console cache:clear --no-warmup; \
+          vendor/bin/phpstan analyse src tests --memory-limit=2048M"
+
+      - name: Symfony test
+        id: symfony_test
+        shell: bash
+        run: |
+          docker run --network=host -v ${GITHUB_WORKSPACE}/phpunit:/app/phpunit -e APP_ENV=test -e APP_DEBUG=1 image /bin/bash -c "composer config --global; \
+          composer install -n --prefer-dist; \
+          php bin/console cache:pool:clear cache.global_clearer; \
+          php bin/console cache:clear --no-warmup; \
+          php bin/console cache:warmup; \
+          php bin/console doctrine:database:drop --force --if-exists; \
+          php bin/console doctrine:database:create; \
+          php bin/console doctrine:schema:create; \
+          export APP_ENV=test; \
+          mkdir -p var/out/xml; \
+          php bin/phpunit --configuration=phpunit.xml.dist --stop-on-failure --coverage-xml /app/var/out/xml; \
+          php tests/phpunit-threshold.php var/out/xml/index.xml 80;"
+
+  security-and-deploy:
+    timeout-minutes: 40
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: set env
+        id: set_env
+        shell: bash
+        run: |
+          echo "TIME=$(date +'%Y-%m-%dT%H:%M:%S')" >> $GITHUB_ENV
+          if [[ "${{github.event.release.target_commitish}}" == "main" ]] && [[ -f "./.env.prod.cloud" ]]; then
+            echo "We are setting prod env"
+            while IFS= read -r line || [ -n "$line" ]; do
+            echo "$line" >> $GITHUB_ENV
+            done < .env.prod.cloud
+          else
+            echo "We are setting staging env"
+            while IFS= read -r line || [ -n "$line" ]; do
+            echo "$line" >> $GITHUB_ENV
+            done < .env.staging.cloud
+          fi
+          cat $GITHUB_ENV
+
+      - name: Generate Tag
+        id: generate_tag
+        shell: bash
+        run: |
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            branch=${GITHUB_REF##*/}
+            sha=${GITHUB_SHA:0:7}
+            ts=$(date +%s)
+            echo "TAG=${branch}-${sha}-${ts}" >> $GITHUB_ENV
+            echo "IMAGE_REFERENCE=${{ env.IMAGE_FULLY_QUALIFIED_NAME }}:${branch}-${sha}-${ts}" >> $GITHUB_ENV
+          else
+            echo "IMAGE_REFERENCE=mems-be:pipeline" >> $GITHUB_ENV  
+          fi
+          cat $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE_REFERENCE }}
+          target: php_prod
+          load: true
+
+      - name: Run Trivy vulnerability scanner
+        id: trivy_scan
+        uses: aquasecurity/trivy-action@0.29.0
+        with:
+          image-ref: ${{ env.IMAGE_REFERENCE }}
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+          skip-dirs: '/app/config/jwt'
+
+      - name: 'Authenticate to Google Cloud'
+        if: github.ref == 'refs/heads/main'
+        id: 'auth'
+        uses: 'google-github-actions/auth@v2'
+        with:
+          token_format: 'access_token'
+          workload_identity_provider: projects/${{ env.GCP_PROJECT_NUMBER }}/locations/global/workloadIdentityPools/tools-ci/providers/github
+          service_account: ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Login to GAR
+        if: github.ref == 'refs/heads/main'
+        id: 'login_gar'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.ARTIFACT_REGISTRY }}
+          username: oauth2accesstoken
+          password: ${{ steps.auth.outputs.access_token }}
+
+      - name: Push to registry
+        if: github.ref == 'refs/heads/main'
+        id: push_registry
+        shell: bash
+        run: |
+          gcloud auth configure-docker ${{ env.ARTIFACT_REGISTRY }} --quiet
+          docker push ${{ env.IMAGE_REFERENCE }}
