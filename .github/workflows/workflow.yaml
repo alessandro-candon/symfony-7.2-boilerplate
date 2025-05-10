@@ -115,7 +115,7 @@ jobs:
           php bin/console doctrine:database:drop --force --if-exists ; \
           php bin/console doctrine:database:create ; \
           php bin/console doctrine:migrations:migrate --no-interaction --all-or-nothing ; \
-          bin/console doctrine:schema:validate --skip-sync && bin/console doctrine:migrations:up-to-date && ! bin/console doctrine:migrations:diff;"
+          php bin/console doctrine:schema:validate;"
 
 
       - name: Linting
