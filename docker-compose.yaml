@@ -1,0 +1,58 @@
+services:
+  php:
+    working_dir: /app
+    depends_on:
+      - redis
+      - postgres
+    build:
+      context: .
+      target: php_dev
+      dockerfile: Dockerfile
+    volumes:
+      - .:/app
+      - ${HOME}/.config/gcloud/application_default_credentials.json:/tmp/application_default_credentials.json
+    ports:
+      - "8000:8000"
+#    entrypoint: ["symfony", "local:server:start", "--port=8000", "--allow-all-ip", "--no-tls"]
+    entrypoint: ['tail', '-f', '/dev/null']
+  postgres:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: database
+      PGDATA: /var/lib/pg_data
+    ports:
+      - "5433:5432"
+    volumes:
+      - .data/psql:/var/lib/postgresql/data
+  redis:
+    image: "redis:alpine"
+    command: redis-server
+    environment:
+      - REDIS_REPLICATION_MODE=master
+  pgadmin:
+    profiles: [ "pgadmin" ]
+    image: bitnami/phppgadmin
+    environment:
+      DATABASE_HOST: postgres
+    depends_on:
+      - postgres
+  mailer:
+    image: axllent/mailpit
+    ports:
+      - 8025:8025
+      - 1025:1025
+    environment:
+      MP_MAX_MESSAGES: 5000
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+  fake-gcs-server:
+    image: fsouza/fake-gcs-server
+    container_name: fake-gcs-server
+    ports:
+      - "4443:4443"
+    command: [ "-scheme", "http" ]
+    volumes:
+      - .data/gcs:/data

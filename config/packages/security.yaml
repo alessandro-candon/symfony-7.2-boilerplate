@@ -1,0 +1,32 @@
+security:
+    role_hierarchy:
+        ROLE_USER: []
+
+    firewalls:
+        api_token:
+            pattern: ^/token$
+            security: false
+        api:
+            pattern: ^/
+            security: true
+            stateless: true
+            oauth2: true
+
+    providers:
+        users:
+            entity:
+                class: App\Entity\UserEntity
+
+    password_hashers:
+        App\Entity\UserEntity: 'auto'
+        Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface:
+            algorithm: 'auto'
+            cost: 15
+when@test:
+    security:
+        password_hashers:
+            Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface:
+                algorithm: auto
+                cost: 4 # Lowest possible value for bcrypt
+                time_cost: 3 # Lowest possible value for argon
+                memory_cost: 10 # Lowest possible value for argon

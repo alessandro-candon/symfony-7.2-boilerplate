@@ -1,0 +1,51 @@
+# This file is the entry point to configure your own services.
+# Files in the packages/ subdirectory configure your dependencies.
+
+# Put parameters here that don't need to change on each machine where the app is deployed
+# https://symfony.com/doc/current/best_practices.html#use-parameters-for-application-configuration
+parameters:
+
+services:
+    # default configuration for services in *this* file
+    _defaults:
+        autowire: true      # Automatically injects dependencies in your services.
+        autoconfigure: true # Automatically registers your services as commands, event subscribers, etc.
+
+    App\:
+        resource: "../src/"
+        exclude:
+            - "../src/DependencyInjection/"
+            - "../src/Entity/"
+            - "../src/Kernel.php"
+            - "../../src/Doctrine/"
+            - "../../src/Entity/"
+            - "../../src/Event/**/*Event.php"
+            - "../../src/DTO/"
+            - "../../src/Kernel.php"
+
+    League\OAuth2\Server\Repositories\UserRepositoryInterface:
+        class: App\Security\UserSecurityService
+        decorates: 'League\Bundle\OAuth2ServerBundle\Repository\UserRepository'
+
+    App\Event\SymfonyHandler\ExceptionEventHandler:
+        class: App\Event\SymfonyHandler\ExceptionEventHandler
+        tags:
+            - { name: kernel.event_listener, event: kernel.exception }
+        arguments:
+            - "@logger"
+            - "%env(default:EMPTY_STRING:string:APP_ENV)%"
+            - "%env(default:EMPTY_STRING:string:APP_VERSION)%"
+            - "%env(default:EMPTY_STRING:string:APP_NAME)%"
+
+    gedmo.listener.timestampable:
+        class: Gedmo\Timestampable\TimestampableListener
+        tags:
+            - { name: doctrine.event_listener, event: "prePersist" }
+            - { name: doctrine.event_listener, event: "onFlush" }
+            - { name: doctrine.event_listener, event: "loadClassMetadata" }
+
+    gedmo.listener.softdeleteable:
+        class: Gedmo\SoftDeleteable\SoftDeleteableListener
+        tags:
+            - { name: doctrine.event_listener, event: "onFlush" }
+            - { name: doctrine.event_listener, event: "loadClassMetadata" }

@@ -1,0 +1,12 @@
+node_modules
+.data
+.github
+.husky
+.policy
+doc
+.phpcs-cache
+.phpunit.result.cache
+commitlint.config.js
+package.json
+package-lock.json
+README.MD
